@@ -1,8 +1,11 @@
-.PHONY: help install install-dev type-check test test-cov build deploy clean validate local-invoke
+.PHONY: help install install-dev type-check pre-commit test test-cov \
+	validate build build-container check-config check-local-env deploy \
+	deploy-guided delete local-invoke local-invoke-debug clean logs \
+	update-hooks lock ci-check
 
 # Default target
 help: ## Show this help message
-	@echo "EC2 Auto-Shutdown - Available commands:"
+	@echo "Server Saver - Available commands:"
 	@echo ""
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
 
@@ -13,7 +16,7 @@ help: ## Show this help message
 install: ## Install production dependencies only
 	uv sync --no-group dev
 
-install-dev: ## Install all dependencies (including dev)
+install-dev: ## Install all dependencies (including dev) and pre-commit hooks
 	uv sync
 	uv run pre-commit install
 
@@ -37,8 +40,15 @@ test: ## Run tests
 test-cov: ## Run tests with coverage report
 	uv run pytest --cov=src --cov-report=term-missing --cov-report=html
 
-test-watch: ## Run tests in watch mode (requires pytest-watch)
-	uv run ptw -- --tb=short
+# =============================================================================
+# Configuration Checks
+# =============================================================================
+
+check-config: ## Ensure samconfig.toml exists
+	@test -f samconfig.toml || (echo "samconfig.toml not found. Run: cp samconfig.example.toml samconfig.toml" && exit 1)
+
+check-local-env: ## Ensure tests/local-env.json exists
+	@test -f tests/local-env.json || (echo "tests/local-env.json not found. Run: cp tests/local-env.json.example tests/local-env.json" && exit 1)
 
 # =============================================================================
 # SAM Commands
@@ -53,32 +63,23 @@ build: ## Build SAM application
 build-container: ## Build SAM application using container
 	sam build --use-container
 
-deploy: build ## Build and deploy to AWS (interactive)
+deploy: check-config build ## Build and deploy to AWS (uses samconfig.toml)
 	sam deploy
 
-deploy-guided: build ## Build and deploy with guided prompts
+deploy-guided: build ## Build and deploy with guided prompts (writes samconfig.toml)
 	sam deploy --guided
 
-deploy-dev: build ## Deploy to dev environment
-	sam deploy --config-env dev
-
-deploy-prod: build ## Deploy to prod environment
-	sam deploy --config-env prod
-
-sync: ## Sync local changes to AWS (dev only)
-	sam sync --watch --stack-name ec2-auto-shutdown-dev
-
-delete: ## Delete the CloudFormation stack
+delete: check-config ## Delete the CloudFormation stack
 	sam delete
 
 # =============================================================================
 # Local Testing
 # =============================================================================
 
-local-invoke: build ## Invoke function locally with test event
+local-invoke: check-local-env build ## Invoke function locally with test event
 	sam local invoke ShutdownFunction --event tests/scheduled_event.json --env-vars tests/local-env.json
 
-local-invoke-debug: build ## Invoke function locally with debug output
+local-invoke-debug: check-local-env build ## Invoke function locally with debug output
 	sam local invoke ShutdownFunction --event tests/scheduled_event.json --env-vars tests/local-env.json --debug
 
 # =============================================================================
@@ -96,7 +97,7 @@ clean: ## Remove build artifacts
 	find . -type f -name "*.pyc" -delete
 
 logs: ## Tail Lambda logs (requires deployed function)
-	sam logs -n ShutdownFunction --stack-name ec2-auto-shutdown --tail
+	sam logs -n ShutdownFunction --stack-name server-saver --tail
 
 update-hooks: ## Update pre-commit hooks
 	uv run pre-commit autoupdate
@@ -108,7 +109,7 @@ lock: ## Update uv.lock file
 # CI/CD Helpers
 # =============================================================================
 
-ci-check: ## Run all CI checks (pre-commit, type-check, test)
+ci-check: ## Run all CI checks (pre-commit, type-check, test, validate)
 	$(MAKE) pre-commit
 	$(MAKE) type-check
 	$(MAKE) test-cov
