@@ -1,0 +1,6 @@
+{
+  "ShutdownFunction": {
+    "INSTANCE_IDS": "i-0123456789abcdef0",
+    "SNS_TOPIC_ARN": ""
+  }
+}
