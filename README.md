@@ -1,31 +1,48 @@
 # Server Saver
 
-Automatically shut down EC2 instances at midnight EST to prevent runaway costs
-from forgotten instances.
+Automatically shut down EC2 instances on a schedule (midnight US Eastern by
+default) to prevent runaway costs from forgotten instances.
 
 ## Features
 
-- 🕐 **Scheduled shutdown** at midnight EST (configurable) using EventBridge
-  Scheduler
-- 📧 **Email notifications** via SNS when instances are stopped
-- 🏷️ **Tag-based targeting** - only stops instances tagged with
+- 🕐 **Scheduled shutdown** at midnight Eastern time (configurable) using
+  EventBridge Scheduler
+- 📧 **Email notifications** via SNS with a summary of each run
+- 🏷️ **Tag-gated permissions** - the function can only stop instances tagged
   `AutoShutdown: true`
-- 📊 **CloudWatch alarms** for Lambda errors
-- 🔒 **Least-privilege IAM** - only permissions needed to stop specified
-  instances
+- 📊 **CloudWatch alarm** for Lambda errors
+- 🔒 **Least-privilege IAM** - only the permissions needed to describe and stop
+  tagged instances
 - ✅ **Idempotent** - safely handles already-stopped instances
+
+## How Targeting Works
+
+An instance is stopped only when **both** of these are true:
+
+1. Its ID is listed in the `InstanceIds` parameter
+2. It is tagged `AutoShutdown: true`
+
+The list tells the function _what to try_ to stop; the tag is enforced by IAM
+and controls _what it is allowed_ to stop.
+
+> **Important:** All running instances are stopped in a single `StopInstances`
+> call. If any listed instance is missing the tag, AWS rejects the whole request
+> with `UnauthorizedOperation` and **none** of them are stopped. The failure is
+> reported in the email notification. Make sure every listed instance is tagged.
 
 ## Prerequisites
 
-- AWS CLI
+- AWS CLI with credentials configured
 - AWS SAM CLI
-- UV
+- [uv](https://docs.astral.sh/uv/)
 - Python 3.13
-- Docker (for `sam build --use-container`)
+- Docker (for `sam local invoke` and `sam build --use-container`)
 
-**USE THIS IF USING RANCHER DESKTOP AND NEED LOCAL INVOKE:**
+**Using Rancher Desktop?** Point SAM at its Docker socket for local invoke:
 
-> `export DOCKER_HOST=unix://$HOME/.rd/docker.sock`
+```bash
+export DOCKER_HOST=unix://$HOME/.rd/docker.sock
+```
 
 You will also need to switch from containerd to dockerd in Rancher Desktop
 settings.
@@ -37,18 +54,23 @@ server-saver/
 ├── src/
 │   └── shutdown/
 │       ├── __init__.py
-│       ├── handler.py      # Lambda function code
+│       └── handler.py              # Lambda function code
 ├── tests/
 │   ├── __init__.py
-│   └── test_handler.py     # Unit tests with moto mocking
-├── template.yaml           # SAM template
-├── samconfig.toml          # SAM deployment configuration
-├── pyproject.toml          # Python project & tooling config
-├── uv.lock                 # UV lockfile (committed for reproducibility)
-├── Makefile                # Common commands
-├── .pre-commit-config.yaml # Pre-commit hooks
+│   ├── test_handler.py             # Unit tests with moto mocking
+│   ├── scheduled_event.json        # Sample EventBridge event
+│   └── local-env.json.example      # Sample env vars for local invoke
+├── template.yaml                   # SAM template
+├── samconfig.example.toml          # Sample SAM config (copy to samconfig.toml)
+├── pyproject.toml                  # Python project & tooling config
+├── uv.lock                         # uv lockfile (committed for reproducibility)
+├── Makefile                        # Common commands
+├── .pre-commit-config.yaml         # Pre-commit hooks
 └── README.md
 ```
+
+`samconfig.toml` and `tests/local-env.json` are gitignored so your real instance
+IDs and email address stay out of version control.
 
 ## Development Setup
 
@@ -60,7 +82,7 @@ make install-dev
 
 ### 1. Tag Your EC2 Instances
 
-Add the `AutoShutdown` tag to instances you want to automatically shut down:
+Add the `AutoShutdown` tag to every instance you want shut down:
 
 ```bash
 aws ec2 create-tags \
@@ -68,63 +90,46 @@ aws ec2 create-tags \
   --tags Key=AutoShutdown,Value=true
 ```
 
-### 2. Build and Deploy
+### 2. Configure
 
 ```bash
-# First time deployment (guided)
-sam build
-sam deploy --guided
-
-# You'll be prompted for:
-# - Stack name: server-saver
-# - AWS Region: us-east-1
-# - InstanceIds: i-0123456789abcdef0 (comma-separated if multiple)
-# - NotificationEmail: your@email.com
+cp samconfig.example.toml samconfig.toml
 ```
 
-### 3. Confirm SNS Subscription
+Edit `parameter_overrides` in `samconfig.toml` and set your `InstanceIds`
+(comma-separated if multiple) and `NotificationEmail`.
+
+Alternatively, skip this step and run `make deploy-guided`, which prompts for
+the values and writes `samconfig.toml` for you.
+
+### 3. Build and Deploy
+
+```bash
+make deploy
+```
+
+### 4. Confirm SNS Subscription
 
 Check your email and confirm the SNS subscription to receive notifications.
 
-### Updating Instance List
+### Updating the Instance List or Schedule
 
-```bash
-sam deploy --parameter-overrides \
-  InstanceIds="i-abc123,i-def456,i-ghi789" \
-  NotificationEmail="you@example.com"
+Edit `parameter_overrides` in `samconfig.toml` and run `make deploy` again. For
+example, to run at 11 PM:
+
+```
+ScheduleExpression=\"cron(0 23 * * ? *)\"
 ```
 
-### Changing the Schedule
-
-To run at a different time (e.g., 11 PM):
-
-```bash
-sam deploy --parameter-overrides \
-  InstanceIds="i-abc123" \
-  NotificationEmail="you@example.com" \
-  ScheduleExpression="cron(0 23 * * ? *)"
-```
+Remember to tag any newly added instances.
 
 ### Cleanup
 
 ```bash
-sam delete --stack-name server-saver
+make delete
 ```
 
 ## Testing
-
-> You can test this with a real instance ID in a local env file. The function
-> will attempt to describe the instance but won't stop it without proper
-> permissions.
-
-```json
-{
-    "ShutdownFunction": {
-        "INSTANCE_IDS": "<YOUR_TEST_INSTANCE_IDS>",
-        "SNS_TOPIC_ARN": ""
-    }
-}
-```
 
 ### Run Tests
 
@@ -141,43 +146,42 @@ make test-cov
 ### Local Lambda Invocation
 
 ```bash
-# Copy example env file
-cp local-env.json.example local-env.json
+cp tests/local-env.json.example tests/local-env.json
+# Edit INSTANCE_IDS with your instance ID(s)
 
-# Edit with your instance ID
-vim local-env.json
-
-# Build and invoke locally
-make build
 make local-invoke
 ```
 
-**Note:** Local invocation with real AWS credentials will attempt to describe
-instances but won't stop them without proper permissions.
+> **Warning:** `sam local invoke` runs with **your local AWS credentials**, not
+> the deployed function's IAM role, so the tag restriction does not apply. If
+> your credentials can stop instances, the listed instances **will be stopped**.
+> Use a test instance or credentials without `ec2:StopInstances`. Notifications
+> are skipped locally when `SNS_TOPIC_ARN` is empty.
 
 ## Commands
 
-| Command                | Description                                 |
-| ---------------------- | ------------------------------------------- |
-| `make help`            | Show all available commands                 |
-| `make install`         | Install production dependencies only        |
-| `make install-dev`     | Install all dependencies + pre-commit hooks |
-| `make test`            | Run pytest                                  |
-| `make test-cov`        | Run tests with coverage report              |
-| `make type-check`      | Run mypy type checker                       |
-| `make pre-commit`      | Run pre-commit on all files                 |
-| `make build`           | Build SAM application                       |
-| `make build-container` | Build SAM using container                   |
-| `make deploy`          | Build and deploy to AWS                     |
-| `make deploy-guided`   | Build and deploy with guided prompts        |
-| `make deploy-dev`      | Deploy to dev environment                   |
-| `make deploy-prod`     | Deploy to prod environment                  |
-| `make validate`        | Validate SAM template                       |
-| `make local-invoke`    | Invoke function locally with test event     |
-| `make logs`            | Tail Lambda logs                            |
-| `make clean`           | Remove build artifacts                      |
-| `make lock`            | Update uv.lock file                         |
-| `make ci-check`        | Run all CI checks                           |
+| Command                   | Description                                      |
+| ------------------------- | ------------------------------------------------ |
+| `make help`               | Show all available commands                      |
+| `make install`            | Install production dependencies only             |
+| `make install-dev`        | Install all dependencies + pre-commit hooks      |
+| `make test`               | Run pytest                                       |
+| `make test-cov`           | Run tests with coverage report                   |
+| `make type-check`         | Run mypy type checker                            |
+| `make pre-commit`         | Run pre-commit on all files                      |
+| `make validate`           | Validate SAM template                            |
+| `make build`              | Build SAM application                            |
+| `make build-container`    | Build SAM using container                        |
+| `make deploy`             | Build and deploy using `samconfig.toml`          |
+| `make deploy-guided`      | Build and deploy with prompts (writes samconfig) |
+| `make delete`             | Delete the CloudFormation stack                  |
+| `make local-invoke`       | Invoke function locally with test event          |
+| `make local-invoke-debug` | Invoke locally with debug output                 |
+| `make logs`               | Tail Lambda logs                                 |
+| `make clean`              | Remove build artifacts                           |
+| `make lock`               | Update uv.lock file                              |
+| `make update-hooks`       | Update pre-commit hooks                          |
+| `make ci-check`           | Run all CI checks                                |
 
 ## Configuration
 
@@ -188,24 +192,35 @@ instances but won't stop them without proper permissions.
 | `InstanceIds`        | Comma-separated list of EC2 instance IDs | (required)                     |
 | `NotificationEmail`  | Email for shutdown notifications         | (required)                     |
 | `ScheduleExpression` | Cron expression for schedule             | `cron(0 0 * * ? *)` (midnight) |
-| `ScheduleTimezone`   | Timezone for schedule                    | `America/New_York`             |
-| `Environment`        | Environment name (dev/staging/prod)      | `prod`                         |
+| `ScheduleTimezone`   | IANA timezone for the schedule           | `America/New_York`             |
+| `Environment`        | Environment tag (dev/staging/prod)       | `prod`                         |
+
+`America/New_York` follows daylight saving time, so the default schedule runs at
+local midnight year-round (EST in winter, EDT in summer).
 
 ## How It Works
 
-1. **EventBridge Scheduler** triggers the Lambda function at midnight EST daily
+1. **EventBridge Scheduler** triggers the Lambda function on the configured
+   schedule
 2. **Lambda** reads instance IDs from the `INSTANCE_IDS` environment variable
 3. For each instance:
     - Checks current state via `ec2:DescribeInstances`
-    - If running, stops it via `ec2:StopInstances`
-    - If already stopped, logs and skips
-4. **SNS notification** sent with results summary
-5. **CloudWatch alarm** fires if Lambda encounters errors
+    - If running or pending, adds it to the stop request
+    - If already stopped or stopping, logs and skips
+    - If terminated or missing, reports it as failed
+4. Running instances are stopped with a single `ec2:StopInstances` call
+5. **SNS notification** is sent with a results summary
+6. **CloudWatch alarm** fires if the Lambda itself errors
+
+Stop failures (such as an untagged instance) are reported in the notification
+but do not cause the Lambda to error, so they will not trigger the CloudWatch
+alarm.
 
 ## IAM Permissions
 
 The Lambda function has these permissions:
 
-- `ec2:DescribeInstances` - Check instance states (all instances)
-- `ec2:StopInstances` - Stop instances (only those tagged `AutoShutdown: true`)
-- `sns:Publish` - Send notifications to the shutdown topic
+- `ec2:DescribeInstances`, `ec2:DescribeInstanceStatus` - check instance states
+  (all instances; these actions do not support resource-level scoping)
+- `ec2:StopInstances` - stop instances, only those tagged `AutoShutdown: true`
+- `sns:Publish` - send notifications to the shutdown topic
