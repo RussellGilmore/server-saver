@@ -1,0 +1,195 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Server Saver - Automatically stop EC2 instances at midnight EST
+
+Metadata:
+  AWS::ServerlessRepo::Application:
+    Name: server-saver
+    Description:
+      Lambda function to automatically shut down EC2 instances on a schedule
+    Author: Russell Gilmore
+    Labels:
+      - ec2
+      - lambda
+      - scheduler
+      - cost-optimization
+
+Parameters:
+  InstanceIds:
+    Type: String
+    Description: Comma-separated list of EC2 instance IDs to shut down
+    AllowedPattern: ^i-[a-z0-9]+(,\s*i-[a-z0-9]+)*$
+    ConstraintDescription:
+      Must be a comma-separated list of valid EC2 instance IDs (e.g.,
+      i-1234567890abcdef0)
+
+  NotificationEmail:
+    Type: String
+    Description: Email address for shutdown notifications
+    AllowedPattern: ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$
+    ConstraintDescription: Must be a valid email address
+
+  ScheduleExpression:
+    Type: String
+    Description:
+      Cron expression for when to run the shutdown (default is midnight)
+    Default: cron(0 0 * * ? *)
+
+  ScheduleTimezone:
+    Type: String
+    Description: Timezone for the schedule expression
+    Default: America/New_York
+
+  Environment:
+    Type: String
+    Description: Environment name for resource tagging
+    Default: prod
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+
+Globals:
+  Function:
+    Timeout: 60
+    MemorySize: 128
+    Runtime: python3.13
+    Architectures:
+      - arm64
+    Tracing: Active
+    LoggingConfig:
+      LogFormat: JSON
+      ApplicationLogLevel: INFO
+      SystemLogLevel: WARN
+    Tags:
+      Project: server-saver
+      Environment: !Ref Environment
+      ManagedBy: SAM
+
+Resources:
+  # SNS Topic for notifications
+  ShutdownNotificationTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub server-saver-notifications-${Environment}
+      DisplayName: EC2 Auto-Shutdown Notifications
+      Tags:
+        - Key: Project
+          Value: server-saver
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Email subscription to SNS topic
+  ShutdownNotificationSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref ShutdownNotificationTopic
+      Protocol: email
+      Endpoint: !Ref NotificationEmail
+
+  # Lambda function
+  ShutdownFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub server-saver-${Environment}
+      Description: Automatically stop EC2 instances on a schedule
+      CodeUri: src/shutdown/
+      Handler: handler.lambda_handler
+      Environment:
+        Variables:
+          INSTANCE_IDS: !Ref InstanceIds
+          SNS_TOPIC_ARN: !Ref ShutdownNotificationTopic
+          POWERTOOLS_SERVICE_NAME: server-saver
+          POWERTOOLS_LOG_LEVEL: INFO
+      Policies:
+        - Version: "2012-10-17"
+          Statement:
+            - Sid: EC2DescribeInstances
+              Effect: Allow
+              Action:
+                - ec2:DescribeInstances
+                - ec2:DescribeInstanceStatus
+              Resource: "*"
+            - Sid: EC2StopInstances
+              Effect: Allow
+              Action:
+                - ec2:StopInstances
+              Resource: !Sub arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:instance/*
+              Condition:
+                StringEquals:
+                  aws:ResourceTag/AutoShutdown: "true"
+            - Sid: SNSPublish
+              Effect: Allow
+              Action:
+                - sns:Publish
+              Resource: !Ref ShutdownNotificationTopic
+      Events:
+        ScheduledShutdown:
+          Type: ScheduleV2
+          Properties:
+            Name: !Sub server-saver-schedule-${Environment}
+            Description: Trigger EC2 shutdown at midnight
+            ScheduleExpression: !Ref ScheduleExpression
+            ScheduleExpressionTimezone: !Ref ScheduleTimezone
+            State: ENABLED
+            FlexibleTimeWindow:
+              Mode: "OFF"
+            RetryPolicy:
+              MaximumRetryAttempts: 3
+              MaximumEventAgeInSeconds: 3600
+
+  # CloudWatch Log Group with retention
+  ShutdownFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${ShutdownFunction}
+      RetentionInDays: 30
+      Tags:
+        - Key: Project
+          Value: server-saver
+        - Key: Environment
+          Value: !Ref Environment
+
+  # CloudWatch Alarm for function errors
+  ShutdownFunctionErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub server-saver-errors-${Environment}
+      AlarmDescription: Alarm when shutdown function has errors
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref ShutdownFunction
+      AlarmActions:
+        - !Ref ShutdownNotificationTopic
+      TreatMissingData: notBreaching
+
+Outputs:
+  ShutdownFunctionArn:
+    Description: ARN of the EC2 shutdown Lambda function
+    Value: !GetAtt ShutdownFunction.Arn
+    Export:
+      Name: !Sub ${AWS::StackName}-FunctionArn
+
+  ShutdownFunctionName:
+    Description: Name of the EC2 shutdown Lambda function
+    Value: !Ref ShutdownFunction
+
+  NotificationTopicArn:
+    Description: ARN of the SNS notification topic
+    Value: !Ref ShutdownNotificationTopic
+    Export:
+      Name: !Sub ${AWS::StackName}-TopicArn
+
+  ScheduleName:
+    Description: Name of the EventBridge schedule
+    Value: !Sub server-saver-schedule-${Environment}
