@@ -1,0 +1,33 @@
+# SAM CLI configuration file
+# https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/serverless-sam-cli-config.html
+#
+# Copy to samconfig.toml (gitignored) and fill in your values:
+#   cp samconfig.example.toml samconfig.toml
+
+version = 0.1
+
+[default.global.parameters]
+stack_name = "server-saver"
+region = "us-east-1"
+
+[default.build.parameters]
+cached = true
+parallel = true
+
+[default.validate.parameters]
+lint = true
+
+[default.deploy.parameters]
+capabilities = "CAPABILITY_IAM"
+confirm_changeset = true
+resolve_s3 = true
+region = "us-east-1"
+s3_prefix = "server-saver"
+parameter_overrides = "InstanceIds=\"i-0123456789abcdef0\" NotificationEmail=\"you@example.com\" ScheduleExpression=\"cron(0 0 * * ? *)\" ScheduleTimezone=\"America/New_York\" Environment=\"prod\""
+image_repositories = []
+
+[default.local_start_api.parameters]
+warm_containers = "EAGER"
+
+[default.local_start_lambda.parameters]
+warm_containers = "EAGER"
