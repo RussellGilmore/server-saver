@@ -1,7 +1,8 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
 Description: >
-  Server Saver - Automatically stop EC2 instances at midnight EST
+  Server Saver - Automatically stop tagged EC2 instances on a schedule to
+  prevent runaway costs
 
 Metadata:
   AWS::ServerlessRepo::Application:
@@ -18,7 +19,9 @@ Metadata:
 Parameters:
   InstanceIds:
     Type: String
-    Description: Comma-separated list of EC2 instance IDs to shut down
+    Description:
+      Comma-separated list of EC2 instance IDs to shut down. Each instance must
+      also be tagged AutoShutdown=true.
     AllowedPattern: ^i-[a-z0-9]+(,\s*i-[a-z0-9]+)*$
     ConstraintDescription:
       Must be a comma-separated list of valid EC2 instance IDs (e.g.,
@@ -38,12 +41,12 @@ Parameters:
 
   ScheduleTimezone:
     Type: String
-    Description: Timezone for the schedule expression
+    Description: IANA timezone for the schedule expression
     Default: America/New_York
 
   Environment:
     Type: String
-    Description: Environment name for resource tagging
+    Description: Environment name for resource naming and tagging
     Default: prod
     AllowedValues:
       - dev
@@ -100,8 +103,6 @@ Resources:
         Variables:
           INSTANCE_IDS: !Ref InstanceIds
           SNS_TOPIC_ARN: !Ref ShutdownNotificationTopic
-          POWERTOOLS_SERVICE_NAME: server-saver
-          POWERTOOLS_LOG_LEVEL: INFO
       Policies:
         - Version: "2012-10-17"
           Statement:
@@ -129,7 +130,7 @@ Resources:
           Type: ScheduleV2
           Properties:
             Name: !Sub server-saver-schedule-${Environment}
-            Description: Trigger EC2 shutdown at midnight
+            Description: Trigger scheduled EC2 shutdown
             ScheduleExpression: !Ref ScheduleExpression
             ScheduleExpressionTimezone: !Ref ScheduleTimezone
             State: ENABLED
