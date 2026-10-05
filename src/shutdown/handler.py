@@ -164,9 +164,7 @@ def send_notification(results: dict[str, Any]) -> None:
         logger.error("Failed to send SNS notification: %s", e)
 
 
-def lambda_handler(
-    event: dict[str, Any], context: Any
-) -> dict[str, Any]:  # noqa: ARG001
+def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     """Lambda entry point for scheduled EC2 shutdown.
 
     Args:
