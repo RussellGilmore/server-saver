@@ -19,7 +19,7 @@ repos:
       - id: pyupgrade
         name: PyUpgrade
   - repo: https://github.com/psf/black
-    rev: 26.5.1
+    rev: 26.10.0
     hooks:
       - id: black
         name: Black
@@ -29,7 +29,7 @@ repos:
         require_serial: true
         minimum_pre_commit_version: 2.9.2
   - repo: https://github.com/gitleaks/gitleaks
-    rev: v8.30.1
+    rev: v8.30.0
     hooks:
       - id: gitleaks
         name: Gitleaks Scanner

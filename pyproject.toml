@@ -1,8 +1,8 @@
 [project]
 name = "server-saver"
-version = "v1.0.0"
+version = "1.0.0"
 description = "AWS SAM app that stops tagged EC2 instances on a schedule to prevent runaway costs"
-requires-python = ">=3.13"
+requires-python = ">=3.14"
 dependencies = [
     "boto3>=1.42.9",
 ]
