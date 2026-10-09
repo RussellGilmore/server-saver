@@ -4,6 +4,7 @@ import json
 from collections.abc import Generator
 from typing import Any
 from unittest.mock import MagicMock
+from botocore.exceptions import ClientError
 
 import boto3
 import pytest
@@ -166,6 +167,77 @@ class TestShutdownInstances:
             assert not results["already_stopped"]
             assert len(results["failed"]) == 1
             assert results["failed"][0]["instance_id"] == "i-nonexistent123456"
+
+    def test_nonexistent_instance_does_not_block_others(
+        self, aws_credentials: None
+    ) -> None:
+        """A missing ID is reported as failed while valid instances still stop."""
+        with mock_aws():
+            ec2 = boto3.client("ec2", region_name="us-east-1")
+            running_id = create_instance(ec2, state="running")
+            stopped_id = create_instance(ec2, state="stopped")
+            missing_id = "i-0000000000000dead"
+
+            results = shutdown_instances([running_id, missing_id, stopped_id])
+
+            assert results["stopped"] == [running_id]
+            assert results["already_stopped"] == [stopped_id]
+            assert len(results["failed"]) == 1
+            assert results["failed"][0]["instance_id"] == missing_id
+
+    def test_malformed_instance_id_does_not_block_others(
+        self, aws_credentials: None
+    ) -> None:
+        """A malformed ID is reported as failed while valid instances still stop."""
+        with mock_aws():
+            ec2 = boto3.client("ec2", region_name="us-east-1")
+            running_id = create_instance(ec2, state="running")
+
+            results = shutdown_instances(["not-an-id", running_id])
+
+            assert results["stopped"] == [running_id]
+            assert [f["instance_id"] for f in results["failed"]] == ["not-an-id"]
+
+    def test_stop_failure_does_not_block_others(
+        self, aws_credentials: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A stop error on one instance (e.g. missing tag) doesn't stop the rest."""
+        with mock_aws():
+            ec2 = boto3.client("ec2", region_name="us-east-1")
+            good_id = create_instance(ec2, state="running")
+            denied_id = create_instance(ec2, state="running")
+
+            real_client: Any = boto3.client
+
+            def client_factory(service: str, *args: Any, **kwargs: Any) -> Any:
+                client = real_client(service, *args, **kwargs)
+                if service != "ec2":
+                    return client
+                real_stop = client.stop_instances
+
+                def stop_instances(**params: Any) -> Any:
+                    if denied_id in params["InstanceIds"]:
+                        raise ClientError(
+                            {
+                                "Error": {
+                                    "Code": "UnauthorizedOperation",
+                                    "Message": "not authorized",
+                                }
+                            },
+                            "StopInstances",
+                        )
+                    return real_stop(**params)
+
+                client.stop_instances = stop_instances
+                return client
+
+            monkeypatch.setattr("shutdown.handler.boto3.client", client_factory)
+
+            results = shutdown_instances([denied_id, good_id])
+
+            assert results["stopped"] == [good_id]
+            assert [f["instance_id"] for f in results["failed"]] == [denied_id]
+            assert "UnauthorizedOperation" in results["failed"][0]["error"]
 
 
 class TestSendNotification:
