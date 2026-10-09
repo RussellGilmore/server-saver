@@ -25,10 +25,9 @@ An instance is stopped only when **both** of these are true:
 The list tells the function _what to try_ to stop; the tag is enforced by IAM
 and controls _what it is allowed_ to stop.
 
-> **Important:** All running instances are stopped in a single `StopInstances`
-> call. If any listed instance is missing the tag, AWS rejects the whole request
-> with `UnauthorizedOperation` and **none** of them are stopped. The failure is
-> reported in the email notification. Make sure every listed instance is tagged.
+> Each instance is checked and stopped independently. A listed ID that doesn't
+> exist, or an instance missing the tag, is reported as a failure in the email
+> notification, and the remaining instances are still stopped.
 
 ## Prerequisites
 
