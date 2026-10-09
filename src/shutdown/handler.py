@@ -48,31 +48,35 @@ def shutdown_instances(instance_ids: list[str]) -> dict[str, Any]:
     ec2 = boto3.client("ec2")
     results: dict[str, Any] = {"stopped": [], "already_stopped": [], "failed": []}
 
-    # First, get current state of all instances
+    instance_states: dict[str, str] = {}
     try:
-        response = ec2.describe_instances(InstanceIds=instance_ids)
+        paginator = ec2.get_paginator("describe_instances")
+        for page in paginator.paginate(
+            Filters=[{"Name": "instance-id", "Values": instance_ids}]
+        ):
+            for reservation in page.get("Reservations", []):
+                for instance in reservation.get("Instances", []):
+                    inst_id = instance["InstanceId"]
+                    inst_state = instance["State"]["Name"]
+                    instance_states[inst_id] = inst_state
+                    logger.info(
+                        "Instance %s is currently in state: %s", inst_id, inst_state
+                    )
     except ClientError as e:
+        # Only account-level problems (permissions, throttling) land here.
         logger.error("Failed to describe instances: %s", e)
         for instance_id in instance_ids:
             results["failed"].append({"instance_id": instance_id, "error": str(e)})
         return results
-
-    # Build a map of instance states
-    instance_states: dict[str, str] = {}
-    for reservation in response.get("Reservations", []):
-        for instance in reservation.get("Instances", []):
-            inst_id = instance["InstanceId"]
-            inst_state = instance["State"]["Name"]
-            instance_states[inst_id] = inst_state
-            logger.info("Instance %s is currently in state: %s", inst_id, inst_state)
 
     # Categorize instances by current state
     to_stop: list[str] = []
     for instance_id in instance_ids:
         state: str | None = instance_states.get(instance_id)
         if state is None:
+            logger.warning("Instance %s not found, skipping", instance_id)
             results["failed"].append(
-                {"instance_id": instance_id, "error": "Instance not found in response"}
+                {"instance_id": instance_id, "error": "Instance not found"}
             )
         elif state in ("stopped", "stopping"):
             results["already_stopped"].append(instance_id)
@@ -90,25 +94,22 @@ def shutdown_instances(instance_ids: list[str]) -> dict[str, Any]:
                 }
             )
 
-    # Stop instances that need stopping
-    if to_stop:
+    # Stop instances one at a time so a failure on one (e.g. a missing
+    # AutoShutdown tag causing UnauthorizedOperation) doesn't block the others.
+    for instance_id in to_stop:
         try:
-            stop_response = ec2.stop_instances(InstanceIds=to_stop)
+            stop_response = ec2.stop_instances(InstanceIds=[instance_id])
             for stopping_instance in stop_response.get("StoppingInstances", []):
-                stopped_id = stopping_instance["InstanceId"]
-                previous_state = stopping_instance["PreviousState"]["Name"]
-                current_state = stopping_instance["CurrentState"]["Name"]
                 logger.info(
                     "Instance %s: %s -> %s",
-                    stopped_id,
-                    previous_state,
-                    current_state,
+                    stopping_instance["InstanceId"],
+                    stopping_instance["PreviousState"]["Name"],
+                    stopping_instance["CurrentState"]["Name"],
                 )
-                results["stopped"].append(stopped_id)
+            results["stopped"].append(instance_id)
         except ClientError as e:
-            logger.error("Failed to stop instances %s: %s", to_stop, e)
-            for instance_id in to_stop:
-                results["failed"].append({"instance_id": instance_id, "error": str(e)})
+            logger.error("Failed to stop instance %s: %s", instance_id, e)
+            results["failed"].append({"instance_id": instance_id, "error": str(e)})
 
     return results
 
