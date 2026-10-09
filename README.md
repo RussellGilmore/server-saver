@@ -47,31 +47,6 @@ export DOCKER_HOST=unix://$HOME/.rd/docker.sock
 You will also need to switch from containerd to dockerd in Rancher Desktop
 settings.
 
-## Project Structure
-
-```
-server-saver/
-├── src/
-│   └── shutdown/
-│       ├── __init__.py
-│       └── handler.py              # Lambda function code
-├── tests/
-│   ├── __init__.py
-│   ├── test_handler.py             # Unit tests with moto mocking
-│   ├── scheduled_event.json        # Sample EventBridge event
-│   └── local-env.json.example      # Sample env vars for local invoke
-├── template.yaml                   # SAM template
-├── samconfig.example.toml          # Sample SAM config (copy to samconfig.toml)
-├── pyproject.toml                  # Python project & tooling config
-├── uv.lock                         # uv lockfile (committed for reproducibility)
-├── Makefile                        # Common commands
-├── .pre-commit-config.yaml         # Pre-commit hooks
-└── README.md
-```
-
-`samconfig.toml` and `tests/local-env.json` are gitignored so your real instance
-IDs and email address stay out of version control.
-
 ## Development Setup
 
 ```bash
